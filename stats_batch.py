@@ -131,11 +131,11 @@ def analyze_paipu_json(json_path: str) -> dict:
             for hule in hules:
                 winner_seat = hule.get('seat', 0)
                 is_zimo = hule.get('zimo', False)
-                point_sum = hule.get('point_sum', 0)
+                dadian = hule.get('dadian', 0)
                 
                 # Win statistics
                 seat_stats[winner_seat]['win_count'] += 1
-                seat_stats[winner_seat]['win_points'] += point_sum
+                seat_stats[winner_seat]['win_points'] += dadian
                 
                 # Deal-in statistics (non-tsumo)
                 if not is_zimo:
@@ -145,7 +145,7 @@ def analyze_paipu_json(json_path: str) -> dict:
                         for i, delta in enumerate(delta_scores):
                             if delta == min_delta and i != winner_seat and delta < 0:
                                 seat_stats[i]['deal_in_count'] += 1
-                                seat_stats[i]['deal_in_points'] += abs(delta)
+                                seat_stats[i]['deal_in_points'] += dadian
                                 break
         
         # Get final scores
