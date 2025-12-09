@@ -1,4 +1,13 @@
-.venv
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
 
-output
-.config
+# Output data
+output/
+player_stats.csv
+stats_result.csv
+
+# Credentials
+.config/

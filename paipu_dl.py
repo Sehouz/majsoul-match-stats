@@ -18,14 +18,16 @@ import struct
 import time
 import argparse
 import base64
-import hashlib
 import uuid
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, List
 from enum import IntEnum
 
 import aiohttp
 import websockets
+
+from proto import liqi_pb2 as pb
+from google.protobuf.json_format import MessageToDict
 
 
 # ============== Configuration ==============
@@ -566,7 +568,7 @@ def capture_credentials():
             
             # Look for accountId - it's usually encoded as varint after field tag
             if "accountId" in msg_str or "account_id" in msg_str or b'\x08' in msg:
-                # Try to find account ID (usually a large number like 24629276)
+                # Try to find account ID (usually a 7-8 digit number)
                 match = re.search(r'accountId[^0-9]*(\d{6,12})', msg_str)
                 if match and not captured["account_id"]:
                     captured["account_id"] = int(match.group(1))
@@ -658,7 +660,7 @@ async def list_records(config: dict, count: int = 10):
 
 
 async def download_record(config: dict, game_uuid: str):
-    """Download a specific game record"""
+    """Download a specific game record and parse to readable JSON"""
     client = MajsoulClient(config.get("server", "cn"))
     
     try:
@@ -668,25 +670,144 @@ async def download_record(config: dict, game_uuid: str):
         print(f"\nFetching record: {game_uuid}")
         record = await client.fetch_record(game_uuid)
         
-        # Decode the game data if present
-        if "data" in record and record["data"]:
-            try:
-                data_bytes = base64.b64decode(record["data"])
-                decoded = decode_record_data(data_bytes)
-                record["data_decoded"] = base64.b64encode(decoded).decode()
-            except Exception as e:
-                print(f"Warning: Failed to decode record data: {e}")
+        # Parse the record into readable format
+        result = parse_game_record(record)
         
         # Save to file
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         output_file = OUTPUT_DIR / f"{game_uuid}.json"
-        output_file.write_text(json.dumps(record, indent=2, ensure_ascii=False))
+        output_file.write_text(json.dumps(result, indent=2, ensure_ascii=False))
         print(f"Saved to: {output_file}")
+        print(f"Actions: {len(result.get('actions', []))}")
         
-        return record
+        return result
         
     finally:
         await client.close()
+
+
+def parse_single_pb(data: bytes, msg_class) -> dict:
+    """Parse a single protobuf message"""
+    try:
+        msg = msg_class()
+        msg.ParseFromString(data)
+        return MessageToDict(msg, preserving_proto_field_name=True)
+    except Exception:
+        return None
+
+
+def parse_repeated_pb(data: bytes, msg_class) -> list:
+    """Parse repeated protobuf messages (length-delimited)"""
+    results = []
+    pos = 0
+    while pos < len(data):
+        # Read field tag
+        if pos >= len(data):
+            break
+        tag = data[pos]
+        pos += 1
+        wire_type = tag & 0x7
+        
+        if wire_type == 2:  # Length-delimited
+            # Read length (varint)
+            length = 0
+            shift = 0
+            while pos < len(data):
+                b = data[pos]
+                pos += 1
+                length |= (b & 0x7f) << shift
+                if not (b & 0x80):
+                    break
+                shift += 7
+            
+            # Parse message
+            if pos + length <= len(data):
+                msg = msg_class()
+                msg.ParseFromString(data[pos:pos + length])
+                results.append(MessageToDict(msg, preserving_proto_field_name=True))
+                pos += length
+        else:
+            # Skip other wire types
+            break
+    return results
+
+
+def parse_game_record(record: dict) -> dict:
+    """Parse raw game record into readable JSON using protobuf definitions"""
+    result = {}
+    
+    # Parse head info with nested protobuf fields
+    if "head" in record:
+        head = record["head"].copy()
+        
+        # Decode accounts field (PlayerGameView)
+        if "accounts" in head and head["accounts"]:
+            parsed = parse_single_pb(base64.b64decode(head["accounts"]), pb.PlayerGameView)
+            if parsed:
+                head["accounts"] = parsed
+        
+        # Decode result.players field (RecordPlayerResult)
+        if "result" in head and head["result"]:
+            result_data = head["result"]
+            if "players" in result_data and result_data["players"]:
+                parsed = parse_single_pb(base64.b64decode(result_data["players"]), pb.RecordPlayerResult)
+                if parsed:
+                    head["result"]["players"] = parsed
+        
+        result["head"] = head
+        result["uuid"] = head.get("uuid")
+    
+    # Parse game data
+    if "data" not in record or not record["data"]:
+        result["error"] = "No game data"
+        return result
+    
+    try:
+        data_bytes = base64.b64decode(record["data"])
+        
+        # Parse outer Wrapper
+        wrapper = pb.Wrapper()
+        wrapper.ParseFromString(data_bytes)
+        
+        # Parse GameDetailRecords
+        detail = pb.GameDetailRecords()
+        detail.ParseFromString(wrapper.data)
+        
+        result["version"] = detail.version
+        result["actions"] = []
+        
+        # Parse each action
+        for action in detail.actions:
+            if not action.result:
+                continue
+            
+            # Parse action Wrapper (no XOR decoding needed for new format)
+            action_wrapper = pb.Wrapper()
+            action_wrapper.ParseFromString(action.result)
+            
+            # Get message type and parse
+            type_name = action_wrapper.name.split(".")[-1]
+            msg_class = getattr(pb, type_name, None)
+            
+            if msg_class:
+                msg = msg_class()
+                msg.ParseFromString(action_wrapper.data)
+                result["actions"].append({
+                    "type": type_name,
+                    "data": MessageToDict(msg, preserving_proto_field_name=True)
+                })
+            else:
+                result["actions"].append({
+                    "type": type_name,
+                    "raw": base64.b64encode(action_wrapper.data).decode()
+                })
+                
+    except Exception as e:
+        result["parse_error"] = str(e)
+        # Save raw data as fallback
+        result["raw_data"] = record.get("data")
+    
+    return result
 
 
 def main():
