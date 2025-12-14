@@ -97,7 +97,11 @@ def analyze_paipu_json(json_path: str) -> dict:
     
     actions = data.get('actions', [])
     
-    for action in actions:
+    # Track last RecordNewRound for honba calculation
+    last_newround_idx = None
+    last_newround_liqibang = 0
+    
+    for idx, action in enumerate(actions):
         action_type = action.get('type', '')
         action_data = action.get('data', {})
         
@@ -113,6 +117,10 @@ def analyze_paipu_json(json_path: str) -> dict:
             # Increment round count
             for i in range(4):
                 seat_stats[i]['round_count'] += 1
+            
+            # Track last RecordNewRound for honba calculation
+            last_newround_idx = idx
+            last_newround_liqibang = action_data.get('liqibang', 0)
         
         # Count riichi
         elif action_type == 'RecordDiscardTile':
@@ -162,6 +170,25 @@ def analyze_paipu_json(json_path: str) -> dict:
                     delta_scores = scores[0].get('delta_scores', [])
                     if old_scores and delta_scores and len(old_scores) == 4 and len(delta_scores) == 4:
                         final_scores = [old_scores[i] + delta_scores[i] for i in range(4)]
+    
+    # If game ended with RecordNoTile, add honba (riichi sticks only) to 1st place
+    if actions and actions[-1].get('type') == 'RecordNoTile' and final_scores is not None:
+        # Count new riichi sticks from last RecordNewRound to RecordNoTile
+        new_riichi_count = 0
+        if last_newround_idx is not None:
+            for i in range(last_newround_idx + 1, len(actions) - 1):
+                if actions[i].get('type') == 'RecordDiscardTile':
+                    if actions[i].get('data', {}).get('is_liqi'):
+                        new_riichi_count += 1
+        
+        # Total riichi sticks = accumulated + new
+        total_riichi_sticks = last_newround_liqibang + new_riichi_count
+        
+        # Add honba (riichi sticks * 1000) to 1st place
+        if total_riichi_sticks > 0:
+            max_score = max(final_scores)
+            winner_seat = final_scores.index(max_score)
+            final_scores[winner_seat] += total_riichi_sticks * 1000
     
     # Count furo from last round
     for i in range(4):
