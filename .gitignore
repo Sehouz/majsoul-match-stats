@@ -11,3 +11,5 @@ stats_result.csv
 
 # Credentials
 .config/
+
+.DS_Store
