@@ -152,7 +152,16 @@ def analyze_paipu_json(json_path: str) -> dict:
         if action_type in ['RecordHule', 'RecordNoTile']:
             scores = action_data.get('scores')
             if scores:
-                final_scores = scores
+                # Handle different score formats
+                if isinstance(scores, list) and len(scores) == 4 and isinstance(scores[0], int):
+                    # Normal format: [score1, score2, score3, score4]
+                    final_scores = scores
+                elif isinstance(scores, list) and len(scores) > 0 and isinstance(scores[0], dict):
+                    # RecordNoTile format: [{'old_scores': [...], 'delta_scores': [...]}]
+                    old_scores = scores[0].get('old_scores', [])
+                    delta_scores = scores[0].get('delta_scores', [])
+                    if old_scores and delta_scores and len(old_scores) == 4 and len(delta_scores) == 4:
+                        final_scores = [old_scores[i] + delta_scores[i] for i in range(4)]
     
     # Count furo from last round
     for i in range(4):
