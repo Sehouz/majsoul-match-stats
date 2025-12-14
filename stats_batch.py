@@ -126,7 +126,27 @@ def analyze_paipu_json(json_path: str) -> dict:
         elif action_type == 'RecordDiscardTile':
             if action_data.get('is_liqi'):
                 seat = action_data.get('seat', 0)
-                seat_stats[seat]['riichi_count'] += 1
+                discarded_tile = action_data.get('tile', '')
+                
+                # Check if riichi is effective
+                # Riichi is NOT effective only if the discarded tile is immediately ron
+                riichi_effective = True
+                
+                # Check next action
+                if idx + 1 < len(actions):
+                    next_action = actions[idx + 1]
+                    if next_action.get('type') == 'RecordHule':
+                        hule_data = next_action.get('data', {})
+                        hules = hule_data.get('hules', [])
+                        for hule in hules:
+                            # Check if this is a ron (not zimo) with the discarded tile
+                            if not hule.get('zimo', False) and hule.get('hu_tile', '') == discarded_tile:
+                                riichi_effective = False
+                                break
+                
+                # Only count if riichi is effective
+                if riichi_effective:
+                    seat_stats[seat]['riichi_count'] += 1
         
         # Count furo (chi/pon/kan) - only mark if called this round
         elif action_type == 'RecordChiPengGang':
